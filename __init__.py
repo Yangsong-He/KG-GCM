@@ -1,5 +1,3 @@
-# /home/guyh/hys/__init__.py
-
 import os
 import sys
 import torch
