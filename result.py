@@ -1,5 +1,3 @@
-# /home/guyh/hys/result.py
-
 import os
 import sys
 import numpy as np
@@ -29,7 +27,7 @@ def evaluate_symbol(symbol: str):
 
     path = os.path.join(RESULTS_PT_DIR, f"{symbol}_results.pt")
     if not os.path.exists(path):
-        print(f"[Eval] ❌ 找不到预测结果文件: {path}")
+        print(f"[Eval] Prediction result file not found: {path}")
         return None
 
     data = torch.load(path, map_location="cpu", weights_only=False)
@@ -46,12 +44,12 @@ def evaluate_symbol(symbol: str):
 
     try:
         auc = roc_auc_score(y_true, y_proba)
-    except:
+    except Exception:
         auc = None
 
     try:
         aupr = average_precision_score(y_true, y_proba)
-    except:
+    except Exception:
         aupr = None
 
     cm = confusion_matrix(y_true, y_pred)
@@ -75,11 +73,12 @@ def evaluate_symbol(symbol: str):
     save_path = os.path.join(RESULT_SAVE_DIR, f"{symbol}_metrics.csv")
     df_save.to_csv(save_path, index=False, encoding="utf-8-sig")
 
-    print(f"[Eval] ✅ 保存成功: {save_path}")
+    print(f"[Eval] Metrics saved successfully: {save_path}")
     return df_save
 
 
-SYMBOLS = ["A601088", "A600938", "A601857", "A600028", "A600019", "A600941", "A601985", "A600900", "A003816"]
+SYMBOLS = [stock code]
+
 def main():
     for sym in SYMBOLS:
         evaluate_symbol(sym)
