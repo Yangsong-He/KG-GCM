@@ -4,22 +4,15 @@ import os
 import sys
 import torch
 
-# ---------------------------------------------------------------------
-# 把当前目录加入 sys.path，方便直接 import 本目录下的模块
-# ---------------------------------------------------------------------
+# Add the current directory to sys.path.
+
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 if CURRENT_DIR not in sys.path:
     sys.path.insert(0, CURRENT_DIR)
 
-# ---------------------------------------------------------------------
-# 导入自己写的模块
-# ---------------------------------------------------------------------
 from quantdata_get import QuantConfig, get_quant_windows_for_symbol
 from data_process import prepare_symbol_daily_data
 
-# 这里假设你已经有 model.py 和 result.py，并且里面都有 main()
-# - model.main()：读取 daily_final/<symbol>_daily.pt，训练/预测，输出到 results/
-# - result.main()：读取 results/<symbol>_results.pt，计算指标，输出到 result/
 try:
     import model
 except ImportError:
@@ -30,57 +23,59 @@ try:
 except ImportError:
     result_mod = None
 
-# ---------------------------------------------------------------------
-# 全局配置（你后面可以在这里改股票代码 / 时间区间 / 权重）
-# ---------------------------------------------------------------------
-SYMBOLS = ["A601088", "A600938", "A601857", "A600028", "A600019", "A600941", "A601985", "A600900", "A003816"]
+# Global configuration Users may modify stock symbols, time range, and weighting parameters.
+SYMBOLS = [stock code]  # e.g., SYMBOLS = ["A601088", "A600938", "A601857"]
 
 START_DATE = "2023-01-01"
 END_DATE = "2024-03-01"
 
-# 过去 T 天作为一个窗口
+# Historical window length in trading days.
 T = 20
 
-# 文本词向量维度（FinBERT base 是 768）
+# Dimension of text embedding vectors.
 EMBED_DIM = 768
 
-# 文本加权：新闻 / QA 的权重
+# Weights assigned to news and QA embeddings.
 W_NEWS = 0.2
 W_QA = 0.8
-# 是否重新跑 FinBERT 文本向量（非常耗时，一般设 False）
+
+# Whether to regenerate FinBERT-based text embeddings. This process is computationally expensive and is disabled by default.
 RUN_TEXT_EMB = False
 
-# 是否在数据准备完之后立刻跑模型和评估
+# Whether to execute model training/prediction and evaluation after data preparation.
 RUN_MODEL = True
 RUN_EVAL = True
-
 
 def main():
     print(">>> HYS system started.")
 
-    # # ============================================================
-    # # STEP 1（可选）：重新构建 FinBERT 文本向量（很慢，默认关闭）
-    # # ============================================================
+    # ============================================================
+    # STEP 1 (Optional):
+    # Generate FinBERT-based text embeddings.
+    # This step is computationally intensive and is disabled by default.
+    # ============================================================
     # if RUN_TEXT_EMB:
     #     print(">>> [STEP 1] Building text embeddings with FinBERT ...")
-    #     from text_embedding import build_all_embeddings  # 惰性导入
+    #     from text_embedding import build_all_embeddings
     #
     #     build_all_embeddings(
     #         model_name_or_path=os.path.join(CURRENT_DIR, "finbert-tone"),
     #         data_dir=CURRENT_DIR,
     #         output_dir=os.path.join(CURRENT_DIR, "daily_vecs"),
-    #         num_gpus=1,          # 多卡之前报 NCCL 错误，这里默认单卡稳定
+    #         num_gpus=1,
     #         batch_size=128,
     #         max_length=128,
     #         chunk_size=20000,
     #         progress=True,
     #     )
-    #     print(">>> [STEP 1] ✅ Text embeddings built and saved into daily_vecs/")
+    #     print(">>> [STEP 1] Text embeddings generated and saved to daily_vecs/")
     # else:
-    #     print(">>> [STEP 1] Skipped building text embeddings (use existing daily_vecs/*)")
+    #     print(">>> [STEP 1] Skipped. Existing embeddings in daily_vecs/ will be used.")
 
     # ============================================================
-    # STEP 2：获取量化数据 + 构造 T 日窗口（失败跳过，不崩）
+    # STEP 2:
+    # Retrieve quantitative market data and construct T-day windows.
+    # Failed symbols are skipped without interrupting the pipeline.
     # ============================================================
     print("\n>>> [STEP 2] Building quantitative windows ...\n")
 
@@ -90,7 +85,7 @@ def main():
     failed_syms = []
 
     for sym in SYMBOLS:
-        print(f">>> Processing Quant Data for {sym} ...")
+        print(f">>> Processing quantitative data for {sym} ...")
         try:
             res = get_quant_windows_for_symbol(
                 symbol=sym,
@@ -101,25 +96,33 @@ def main():
             )
             all_quant_results[sym] = res
         except Exception as e:
-            print(f"[STEP 2] ❌ {sym} 获取失败，跳过。原因：{e}")
+            print(f"[STEP 2] Failed to retrieve data for {sym}. Symbol skipped. Reason: {e}")
             failed_syms.append(sym)
             continue
 
-    print(f"\n>>> [STEP 2] ✅ Quant windows built. 成功 {len(all_quant_results)} 只，失败 {len(failed_syms)} 只。\n")
+    print(
+        f"\n>>> [STEP 2] Quantitative windows generated. "
+        f"Successful: {len(all_quant_results)}, Failed: {len(failed_syms)}.\n"
+    )
 
     if failed_syms:
         fail_path = os.path.join(CURRENT_DIR, "failed_symbols_step2.txt")
         with open(fail_path, "w", encoding="utf-8") as f:
             f.write("\n".join(failed_syms))
-        print(f">>> [STEP 2] 失败列表已保存: {fail_path}\n")
+        print(f">>> [STEP 2] Failure log saved to: {fail_path}\n")
 
     if len(all_quant_results) == 0:
-        print(">>> [STEP 2] ❌ 没有任何股票成功获取量化数据，后续步骤无法继续。")
+        print(
+            ">>> [STEP 2] No symbols were processed successfully. "
+            "Subsequent steps cannot be executed."
+        )
         return
 
     # ============================================================
-    # STEP 3：对齐文本 + 量化，得到每天最终的输入向量，并保存到文件
-    #         只处理 STEP2 成功的股票
+    # STEP 3:
+    # Align textual and quantitative information to generate final
+    # daily input representations for the prediction model.
+    # Results are saved to disk for subsequent use.
     # ============================================================
     print(">>> [STEP 3] Building final per-day model input vectors ...\n")
 
@@ -131,7 +134,7 @@ def main():
     failed_step3 = []
 
     for sym, quant_res in all_quant_results.items():
-        print(f">>> Aligning text + quant for {sym} ...")
+        print(f">>> Aligning textual and quantitative data for {sym} ...")
         try:
             final_data = prepare_symbol_daily_data(
                 symbol=sym,
@@ -143,66 +146,67 @@ def main():
                 qa_dir=qa_dir,
             )
 
-            text_vecs = final_data["text_vecs"]   # (N, 768)
-            quant_vecs = final_data["quant_vecs"] # (N, 768)
+            text_vecs = final_data["text_vecs"]
+            quant_vecs = final_data["quant_vecs"]
 
             print(
-                f">>> {sym} ✅ Final daily data shape: "
+                f">>> {sym} Final daily data shape: "
                 f"{text_vecs.shape} {quant_vecs.shape}"
             )
 
             save_path = os.path.join(save_dir, f"{sym}_daily.pt")
             torch.save(final_data, save_path)
-            print(f">>> {sym} ✅ Saved daily final vectors to: {save_path}\n")
+            print(f">>> {sym} Daily final vectors saved to: {save_path}\n")
 
         except Exception as e:
-            print(f"[STEP 3] ❌ {sym} 对齐/保存失败，跳过。原因：{e}")
+            print(f"[STEP 3] Failed during alignment or saving for {sym}. Symbol skipped. Reason: {e}")
             failed_step3.append(sym)
             continue
 
-    print(">>> [STEP 3] ✅ ALL DATA PREPARED AND SAVED (for successful symbols).")
-    print(">>> You can now feed daily_final/<symbol>_daily.pt into the prediction model.\n")
+    print(">>> [STEP 3] Data preparation completed.")
+    print(">>> Daily representations are available in daily_final/<symbol>_daily.pt.\n")
 
     if failed_step3:
         fail3_path = os.path.join(CURRENT_DIR, "failed_symbols_step3.txt")
         with open(fail3_path, "w", encoding="utf-8") as f:
             f.write("\n".join(failed_step3))
-        print(f">>> [STEP 3] 失败列表已保存: {fail3_path}\n")
+        print(f">>> [STEP 3] Failure log saved to: {fail3_path}\n")
 
     # ============================================================
-    # STEP 4：调用 model.py 进行训练 / 预测
+    # STEP 4:
+    # Execute model training and prediction.
     # ============================================================
     if RUN_MODEL:
         if model is None:
-            print(">>> [STEP 4] ❌ model.py 未找到，跳过模型训练与预测。")
+            print(">>> [STEP 4] model.py not found. Model execution skipped.")
         else:
-            print(">>> [STEP 4] Running model.py (train / predict) ...")
+            print(">>> [STEP 4] Executing model training and prediction ...")
             if hasattr(model, "main"):
                 model.main()
             else:
-                print(">>> [STEP 4] ⚠️ model.py 中未找到 main()，请确认。")
-            print(">>> [STEP 4] ✅ model.py finished.\n")
+                print(">>> [STEP 4] main() function not found in model.py.")
+            print(">>> [STEP 4] Model execution completed.\n")
     else:
-        print(">>> [STEP 4] Skipped model training/prediction (RUN_MODEL=False)\n")
+        print(">>> [STEP 4] Model training and prediction skipped because RUN_MODEL=False.\n")
 
     # ============================================================
-    # STEP 5：调用 result.py 进行评估
+    # STEP 5:
+    # Execute performance evaluation.
     # ============================================================
     if RUN_EVAL:
         if result_mod is None:
-            print(">>> [STEP 5] ❌ result.py 未找到，跳过评估。")
+            print(">>> [STEP 5] result.py not found. Evaluation skipped.")
         else:
-            print(">>> [STEP 5] Running result.py (evaluation) ...")
+            print(">>> [STEP 5] Running evaluation ...")
             if hasattr(result_mod, "main"):
                 result_mod.main()
             else:
-                print(">>> [STEP 5] ⚠️ result.py 中未找到 main()，请确认。")
-            print(">>> [STEP 5] ✅ result.py finished.\n")
+                print(">>> [STEP 5] main() function not found in result.py.")
+            print(">>> [STEP 5] Evaluation completed.\n")
     else:
-        print(">>> [STEP 5] Skipped evaluation (RUN_EVAL=False)\n")
+        print(">>> [STEP 5] Evaluation skipped because RUN_EVAL=False.\n")
 
-    print(">>> 🎯 PIPELINE DONE. All steps finished.")
-
+    print(">>> Pipeline execution completed successfully.")
 
 
 if __name__ == "__main__":
