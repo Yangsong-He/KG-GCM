@@ -1,8 +1,13 @@
 # quantdata_get.py
-# 功能：获取单只股票在指定时间区间内的日线数据，计算技术指标，
-#       并把过去 T 天的数据拼成一个 (N, T, F) 的窗口序列，同时保留对应日期。
-# 说明：内部用 AkShare 的 stock_zh_a_hist（含成交量 volume，成交额 amount 若全 NaN 则用 close*volume 近似），
-#       对外接口不变。
+# Function:
+# Retrieve daily price data for a single stock within a specified time range,
+# compute technical indicators, and construct a window sequence with shape
+# (N, T, F) using the past T trading days while preserving the corresponding dates.
+#
+# Note:
+# This module internally uses AkShare's stock_zh_a_hist interface. The returned
+# data include volume and, when available, amount. If amount is entirely missing,
+# it is approximated by close * volume. The external interface remains unchanged.
 
 from __future__ import annotations
 
@@ -14,50 +19,54 @@ import numpy as np
 import pandas as pd
 
 
-# =====================
-# 配置
-# =====================
+
+# Configuration
 
 @dataclass
 class QuantConfig:
     """
-    量化数据的基本配置
+    Basic configuration for quantitative data processing.
     """
-    # 存放所有股票价格数据的 CSV
+    # CSV file used to store price data for all stocks.
     prices_path: str = "/home/guyh/hys/prices_multi.csv"
-    # 若本地没有数据，是否用 AkShare 在线获取
+
+    # Whether to fetch data online from AkShare if local data are unavailable.
     use_akshare: bool = True
 
+# AkShare data retrieval
 
-# =====================
-# AkShare 数据获取部分
-# =====================
-
-def _fetch_and_append_symbol_data(config: QuantConfig,
-                                  symbol: str,
-                                  start_date: str,
-                                  end_date: str) -> None:
+def _fetch_and_append_symbol_data(
+    config: QuantConfig,
+    symbol: str,
+    start_date: str,
+    end_date: str
+) -> None:
     """
-    使用 AkShare 的 stock_zh_a_hist 获取完整 K 线数据（含成交额 amount），
-    并追加写入 prices_multi.csv。
+    Retrieve complete daily K-line data using AkShare's stock_zh_a_hist
+    interface and append the data to prices_multi.csv.
 
-    参数
-    ----
-    symbol: 例如 "A002538" 这种你自己的代码格式
-    start_date, end_date: "YYYY-MM-DD" 字符串
+    Parameters
+    ----------
+    symbol:
+        Stock code in the user-defined format, e.g., "A002538".
+    start_date, end_date:
+        Date strings in the format "YYYY-MM-DD".
     """
-    print(f"[AkShare] 使用 stock_zh_a_hist 拉取 {symbol} 的日线数据...")
+    print(f"[AkShare] Fetching daily price data for {symbol} using stock_zh_a_hist ...")
 
     try:
         import akshare as ak
     except ImportError:
-        print("[AkShare] 未安装 akshare，请先在环境中安装：pip install akshare")
+        print(
+            "[AkShare] akshare is not installed. "
+            "Please install it first with: pip install akshare"
+        )
         return
 
-    # symbol 可能为 A002538 -> 转成 002538
+    # Convert symbol format, e.g., A002538 -> 002538.
     raw_sym = symbol.replace("A", "")
 
-    # 时间格式转换：2023-01-01 -> 20230101
+    # Convert date format, e.g., 2023-01-01 -> 20230101.
     sd = start_date.replace("-", "")
     ed = end_date.replace("-", "")
 
@@ -67,17 +76,21 @@ def _fetch_and_append_symbol_data(config: QuantConfig,
             period="daily",
             start_date=sd,
             end_date=ed,
-            adjust="qfq"  # 前复权，可按需求改
+            adjust="qfq"  # Forward-adjusted prices. Modify if needed.
         )
     except Exception as e:
-        print(f"[AkShare] 获取 {symbol} 时出错：{e}")
+        print(f"[AkShare] Failed to fetch data for {symbol}. Reason: {e}")
         return
 
     if df is None or df.empty:
-        print(f"[AkShare] 没有拉到 {symbol} 在 {start_date}~{end_date} 的数据。")
+        print(
+            f"[AkShare] No data were retrieved for {symbol} "
+            f"within {start_date} to {end_date}."
+        )
         return
 
-    # 列名重命名（根据当前 akshare 版本，字段名可能略有变化，可打印 df.columns 看）
+    # Rename columns according to the current AkShare output format.
+    # Field names may vary slightly across AkShare versions.
     rename_map = {
         "日期": "date",
         "开盘": "open",
@@ -89,16 +102,17 @@ def _fetch_and_append_symbol_data(config: QuantConfig,
     }
     df.rename(columns=rename_map, inplace=True)
 
-    # 增加 symbol 列，格式对齐
+    # Add the symbol column and standardize the date and numeric fields.
     df["symbol"] = symbol
     df["date"] = pd.to_datetime(df["date"], format="mixed", errors="coerce")
     df["volume"] = pd.to_numeric(df["volume"], errors="coerce")
+
     if "amount" in df.columns:
         df["amount"] = pd.to_numeric(df["amount"], errors="coerce")
     else:
         df["amount"] = np.nan
 
-    # 只保留核心列
+    # Retain only the core columns.
     df = df[["symbol", "date", "open", "high", "low", "close", "volume", "amount"]]
 
     path = config.prices_path
@@ -110,49 +124,62 @@ def _fetch_and_append_symbol_data(config: QuantConfig,
     else:
         df_all = df
 
-    # 保存
+    # Save the updated price table.
     df_all.to_csv(path, index=False, encoding="utf-8-sig")
-    print(f"[AkShare] 已将 {symbol} 的数据写入 {path}，新增 {len(df)} 行。")
+    print(
+        f"[AkShare] Data for {symbol} have been written to {path}. "
+        f"New rows added: {len(df)}."
+    )
 
 
-def _load_price_data(config: QuantConfig,
-                     symbol: str,
-                     start_date: str,
-                     end_date: str) -> pd.DataFrame:
+def _load_price_data(
+    config: QuantConfig,
+    symbol: str,
+    start_date: str,
+    end_date: str
+) -> pd.DataFrame:
     """
-    从 prices_multi.csv 中读取某个 symbol 在指定时间区间的日线数据。
-    若没有且允许 use_akshare，则调用 AkShare 获取一次。
+    Load daily price data for a given symbol from prices_multi.csv within
+    the specified time range. If the local file is unavailable and
+    use_akshare=True, data are fetched once from AkShare.
     """
     path = config.prices_path
 
     if not os.path.exists(path):
-        print(f"[QuantData] {path} 不存在。")
+        print(f"[QuantData] Local price file does not exist: {path}.")
         if config.use_akshare:
-            # 尝试从 AkShare 拉一次数据并写入
+            # Attempt to fetch data from AkShare and write them to disk.
             _fetch_and_append_symbol_data(config, symbol, start_date, end_date)
         else:
-            raise FileNotFoundError(f"{path} 不存在且 use_akshare=False。")
+            raise FileNotFoundError(
+                f"{path} does not exist and use_akshare=False."
+            )
 
     if not os.path.exists(path):
-        raise FileNotFoundError(f"[QuantData] 在尝试 AkShare 后仍未找到 {path}。")
+        raise FileNotFoundError(
+            f"[QuantData] {path} was still not found after attempting AkShare retrieval."
+        )
 
     df_all = pd.read_csv(path)
-    # 兼容 "YYYY-MM-DD" 和 "YYYY-MM-DD HH:MM:SS"
+
+    # Support both "YYYY-MM-DD" and "YYYY-MM-DD HH:MM:SS" date formats.
     df_all["date"] = pd.to_datetime(df_all["date"], format="mixed", errors="coerce")
 
-    # 过滤 symbol & 区间
-    mask_symbol = (df_all["symbol"] == symbol)
+    # Filter by symbol and date range.
+    mask_symbol = df_all["symbol"] == symbol
     mask_date = (df_all["date"] >= pd.to_datetime(start_date)) & (
         df_all["date"] <= pd.to_datetime(end_date)
     )
     df = df_all.loc[mask_symbol & mask_date].copy()
 
     if df.empty and config.use_akshare:
-        # 再尝试拉一遍
+        # Attempt another data retrieval if no local records are found.
         _fetch_and_append_symbol_data(config, symbol, start_date, end_date)
+
         df_all = pd.read_csv(path)
         df_all["date"] = pd.to_datetime(df_all["date"], format="mixed", errors="coerce")
-        mask_symbol = (df_all["symbol"] == symbol)
+
+        mask_symbol = df_all["symbol"] == symbol
         mask_date = (df_all["date"] >= pd.to_datetime(start_date)) & (
             df_all["date"] <= pd.to_datetime(end_date)
         )
@@ -160,38 +187,40 @@ def _load_price_data(config: QuantConfig,
 
     if df.empty:
         raise ValueError(
-            f"在区间 {start_date} ~ {end_date} 中，找不到 symbol={symbol} 的数据"
+            f"No data found for symbol={symbol} within the range "
+            f"{start_date} to {end_date}."
         )
 
-    # 确保数值列为数值
+    # Ensure that numeric columns are converted to numeric types.
     for col in ["open", "high", "low", "close", "volume", "amount"]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    # 如果 amount 全 NaN：用 close * volume 近似填充
+    # If amount is entirely missing, approximate it using close * volume.
     if "amount" in df.columns:
         if df["amount"].isna().all():
-            print(f"[QuantData] {symbol} 的 amount 列全为 NaN，使用 close*volume 近似构造成交额。")
+            print(
+                f"[QuantData] The amount column for {symbol} is entirely NaN. "
+                f"Approximating amount using close * volume."
+            )
             df["amount"] = df["close"] * df["volume"]
 
     df = df.sort_values("date").reset_index(drop=True)
-    print(f"[QuantData] 读取到 {symbol} 原始日线数据行数: {len(df)}")
+
+    print(f"[QuantData] Loaded {len(df)} raw daily records for {symbol}.")
     print(df.head())
 
     return df
 
-
-# =====================
-# 技术指标计算
-# =====================
+# Technical indicator calculation
 
 def _calc_ma(series: pd.Series, window: int) -> pd.Series:
-    """简单移动平均线 MA"""
+    """Calculate the simple moving average."""
     return series.rolling(window=window, min_periods=1).mean()
 
 
 def _calc_rsi(close: pd.Series, period: int = 14) -> pd.Series:
-    """相对强弱指数 RSI"""
+    """Calculate the relative strength index."""
     delta = close.diff()
     gain = np.where(delta > 0, delta, 0.0)
     loss = np.where(delta < 0, -delta, 0.0)
@@ -207,16 +236,19 @@ def _calc_rsi(close: pd.Series, period: int = 14) -> pd.Series:
     return rsi
 
 
-def _calc_macd(close: pd.Series,
-               fast: int = 12,
-               slow: int = 26,
-               signal: int = 9) -> pd.DataFrame:
-    """MACD 指标：DIF, DEA, HIST"""
+def _calc_macd(
+    close: pd.Series,
+    fast: int = 12,
+    slow: int = 26,
+    signal: int = 9
+) -> pd.DataFrame:
+    """Calculate MACD indicators: DIF, DEA, and HIST."""
     ema_fast = close.ewm(span=fast, adjust=False).mean()
     ema_slow = close.ewm(span=slow, adjust=False).mean()
     dif = ema_fast - ema_slow
     dea = dif.ewm(span=signal, adjust=False).mean()
     hist = dif - dea
+
     return pd.DataFrame({
         "macd": dif,
         "macd_signal": dea,
@@ -226,76 +258,88 @@ def _calc_macd(close: pd.Series,
 
 def _add_tech_indicators(df: pd.DataFrame) -> pd.DataFrame:
     """
-    对输入 df（包含 open/high/low/close/volume/amount）添加技术指标：
-    MA(5,10,20)、RSI(14)、MACD。
+    Add technical indicators to the input DataFrame, which should contain
+    open, high, low, close, volume, and amount columns.
+
+    Added indicators include MA(5), MA(10), MA(20), RSI(14), and MACD.
     """
     df = df.copy()
 
-    # 移动平均线
+    # Moving averages.
     df["ma_5"] = _calc_ma(df["close"], 5)
     df["ma_10"] = _calc_ma(df["close"], 10)
     df["ma_20"] = _calc_ma(df["close"], 20)
 
-    # RSI
+    # RSI.
     df["rsi_14"] = _calc_rsi(df["close"], period=14)
 
-    # MACD
+    # MACD.
     macd_df = _calc_macd(df["close"])
     df = pd.concat([df, macd_df], axis=1)
 
-    print(f"[QuantData] 加指标后总行数: {len(df)}，其中可能有部分行某些指标为 NaN（前期不足窗口）")
+    print(
+        f"[QuantData] Technical indicators added. Total rows: {len(df)}. "
+        f"Some early rows may contain NaN values due to insufficient window length."
+    )
+
     return df
 
+# Construct time windows (N, T, F)
 
-# =====================
-# 构造时间窗口 (N, T, F)
-# =====================
-
-def _build_time_windows(df: pd.DataFrame,
-                        T: int,
-                        symbol: str,
-                        feature_cols: Optional[List[str]] = None) -> Dict[str, Any]:
+def _build_time_windows(
+    df: pd.DataFrame,
+    T: int,
+    symbol: str,
+    feature_cols: Optional[List[str]] = None
+) -> Dict[str, Any]:
     """
-    把日线+指标数据构造成 (N, T, F) 的窗口序列，并返回对应日期（窗口最后一天）。
+    Construct a window sequence with shape (N, T, F) from daily price
+    and technical indicator data. Each date corresponds to the last day
+    of the window.
 
-    返回：
+    Returns:
         {
             "symbol": symbol,
-            "X": np.ndarray,    # (N, T, F)
-            "dates": np.ndarray # (N,)
-            "features": List[str]  # 特征名列表
+            "X": np.ndarray,        # (N, T, F)
+            "dates": np.ndarray,    # (N,)
+            "features": List[str]   # Feature names
         }
     """
     df = df.copy()
     df = df.sort_values("date").reset_index(drop=True)
 
-    # 自动选特征列：数值列且不是 symbol/date
+    # Automatically select feature columns:
+    # numeric columns excluding symbol and date.
     if feature_cols is None:
         exclude = {"symbol", "date"}
         raw_feats = [
             c for c in df.columns
-            if (c not in exclude and np.issubdtype(df[c].dtype, np.number))
+            if c not in exclude and np.issubdtype(df[c].dtype, np.number)
         ]
         feature_cols = [c for c in raw_feats if df[c].notna().any()]
 
-    # 缺失值填充（技术指标前期 NaN 用前向/后向填充）
+    # Fill missing values. Early NaN values in technical indicators are
+    # handled by forward and backward filling.
     df[feature_cols] = df[feature_cols].ffill().bfill()
 
-    # 再次检查是否仍有 NaN
+    # Check whether NaN values still remain.
     nan_counts = df[feature_cols].isna().sum()
-    print(f"[QuantData] {symbol} 特征列 NaN 数量（填充后）:")
+    print(f"[QuantData] Number of NaN values after filling for {symbol}:")
     print(nan_counts)
 
     if len(df) < T:
-        raise ValueError(f"{symbol}: 数据行数 {len(df)} < T={T}，无法构造窗口")
+        raise ValueError(
+            f"{symbol}: Number of rows ({len(df)}) is smaller than T={T}. "
+            f"Time windows cannot be constructed."
+        )
 
     X_list = []
     dates_list = []
 
     for i in range(T - 1, len(df)):
-        window = df.iloc[i - T + 1:i + 1]  # 最近 T 天
+        window = df.iloc[i - T + 1:i + 1]  # The most recent T trading days.
 
-        # 理论上已经填充完 NaN，这里加一道保险
+        # Safety check: skip the window if any NaN values remain.
         if window[feature_cols].isna().any().any():
             continue
 
@@ -304,14 +348,17 @@ def _build_time_windows(df: pd.DataFrame,
 
     if not X_list:
         raise ValueError(
-            f"{symbol}: 在区间内虽然有数据，但所有 (T={T}) 日窗口都含 NaN，无法构造有效窗口。"
+            f"{symbol}: Data exist within the specified range, but all "
+            f"T={T} day windows contain NaN values. No valid window can be "
+            f"constructed."
         )
 
     X = np.stack(X_list, axis=0)  # (N, T, F)
     dates_arr = np.array(dates_list)
 
     print(
-        f"[QuantData] 为 {symbol} 构造窗口成功: X.shape = {X.shape}（N, T, F）"
+        f"[QuantData] Successfully constructed time windows for {symbol}: "
+        f"X.shape = {X.shape} (N, T, F)."
     )
 
     return {
@@ -321,32 +368,38 @@ def _build_time_windows(df: pd.DataFrame,
         "features": feature_cols,
     }
 
+# Public interface: retrieve quantitative windows for one stock
 
-# =====================
-# 对外主函数：获取某股票的量价窗口
-# =====================
-
-def get_quant_windows_for_symbol(symbol: str,
-                                 start_date: str,
-                                 end_date: str,
-                                 T: int,
-                                 config: QuantConfig) -> Dict[str, Any]:
-    """
-    对外主接口：
-        1. 读取（或下载）某个 symbol 在区间 [start_date, end_date] 的日线数据；
-        2. 计算技术指标；
-        3. 构造长度为 T 的时间窗口；
-        4. 返回 (N,T,F) 以及每个窗口对应的日期。
-
-    参数
-    ----
-    symbol: 例如 "A002538"
-    start_date, end_date: "YYYY-MM-DD"
-    T: 窗口长度（例如 20）
+def get_quant_windows_for_symbol(
+    symbol: str,
+    start_date: str,
+    end_date: str,
+    T: int,
     config: QuantConfig
+) -> Dict[str, Any]:
+    """
+    Public interface.
 
-    返回
-    ----
+    This function:
+        1. Loads or downloads daily price data for the given symbol
+           within [start_date, end_date].
+        2. Computes technical indicators.
+        3. Constructs time windows of length T.
+        4. Returns X with shape (N, T, F) and the corresponding dates.
+
+    Parameters
+    ----------
+    symbol:
+        Stock code, e.g., "A002538".
+    start_date, end_date:
+        Date strings in the format "YYYY-MM-DD".
+    T:
+        Window length, e.g., 20.
+    config:
+        QuantConfig object.
+
+    Returns
+    -------
     {
         "symbol": ...,
         "X": np.ndarray,      # (N, T, F)
@@ -354,23 +407,25 @@ def get_quant_windows_for_symbol(symbol: str,
         "features": List[str]
     }
     """
-    # 1. 读取或获取原始日线
+    # 1. Load or retrieve raw daily price data.
     df_price = _load_price_data(config, symbol, start_date, end_date)
 
-    # 2. 添加技术指标
+    # 2. Add technical indicators.
     df_feat = _add_tech_indicators(df_price)
 
-    # 3. 构造时间窗口
-    result = _build_time_windows(df_feat, T=T, symbol=symbol, feature_cols=None)
+    # 3. Construct time windows.
+    result = _build_time_windows(
+        df_feat,
+        T=T,
+        symbol=symbol,
+        feature_cols=None
+    )
     return result
 
-
-# =====================
-# 测试入口（直接运行本文件时）
-# =====================
+# Test entry point
 
 if __name__ == "__main__":
-    # 你可以在这里改 symbol / 时间区间 / T
+    # Modify symbol, date range, or T here if needed.
     cfg = QuantConfig(
         prices_path="/home/guyh/hys/prices_multi.csv",
         use_akshare=True
@@ -389,6 +444,6 @@ if __name__ == "__main__":
 
     print(f"symbol: {res['symbol']}")
     print("X shape:", X.shape)
-    print("前 5 个窗口日期（每个窗口最后一天）:", dates[:5])
-    print("特征个数:", len(feats))
-    print("特征名:", feats)
+    print("First five window dates:", dates[:5])
+    print("Number of features:", len(feats))
+    print("Feature names:", feats)
